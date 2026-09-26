@@ -8,6 +8,7 @@ use soroban_sdk::{
 
 pub mod acl_limits_merge_sunset;
 pub mod events;
+pub mod ratings_royalties_dividends;
 
 pub mod test_feature_impl;
 pub mod test_new_features;

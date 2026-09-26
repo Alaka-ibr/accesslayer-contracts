@@ -1,5 +1,5 @@
 use creator_keys::{
-    events, AllowanceError, ContractError, CreatorKeysContract, CreatorKeysContractClient,
+    events, ContractError, CreatorKeysContract, CreatorKeysContractClient,
     RegisterCreatorParams, DEFAULT_FLASH_LOAN_GUARD_LEDGERS, MAX_FLASH_LOAN_GUARD_LEDGERS,
 };
 use soroban_sdk::{
@@ -143,7 +143,7 @@ fn batch_buy_v2_records_ledger_for_flash_loan_guard() {
 }
 
 #[test]
-fn delegated_transfer_is_blocked_inside_guard_window() {
+fn delegated_transfer_carries_guard_to_recipient_sell() {
     let (env, client, _, _) = setup();
     let creator = Address::generate(&env);
     register_creator(&env, &client, &creator);
@@ -153,13 +153,15 @@ fn delegated_transfer_is_blocked_inside_guard_window() {
     client.buy_key(&creator, &buyer, &1000i128, &None);
     client.approve(&buyer, &spender, &creator, &1u32);
 
+    client.transfer_from(&spender, &buyer, &recipient, &creator, &1u32);
+    assert_eq!(client.get_key_balance(&creator, &buyer), 0);
+    assert_eq!(client.get_key_balance(&creator, &recipient), 1);
+
     assert_eq!(
-        client.try_transfer_from(&spender, &buyer, &recipient, &creator, &1u32),
-        Err(Ok(AllowanceError::FlashLoanDetected))
+        client.try_sell_key(&creator, &recipient, &None),
+        Err(Ok(ContractError::FlashLoanDetected))
     );
-    assert_guard_event(&env, &buyer, &creator);
-    assert_eq!(client.get_key_balance(&creator, &buyer), 1);
-    assert_eq!(client.get_key_balance(&creator, &recipient), 0);
+    assert_guard_event(&env, &recipient, &creator);
 }
 
 #[test]

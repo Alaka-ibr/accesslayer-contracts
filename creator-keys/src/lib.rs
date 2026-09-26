@@ -258,8 +258,6 @@ pub enum AllowanceError {
     ZeroAddress = 10,
     /// The sender is still inside the creator's post-buy cooldown window.
     CooldownActive = 11,
-    /// The source wallet is inside the flash-loan guard window.
-    FlashLoanDetected = 12,
 }
 
 /// Errors raised by the sell-tax entrypoints
@@ -13631,9 +13629,6 @@ impl CreatorKeysContract {
 
         let mut profile: CreatorProfile = read_registered_creator_profile(&env, &key_id)
             .map_err(|_| AllowanceError::NotRegistered)?;
-
-        assert_flash_loan_guard(&env, &key_id, &from)
-            .map_err(|_| AllowanceError::FlashLoanDetected)?;
 
         // Mirrors the buy-cooldown guard in `transfer_keys`: a delegating
         // spender must not be able to route keys around the creator's cooldown.

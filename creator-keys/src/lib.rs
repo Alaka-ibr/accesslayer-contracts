@@ -6,6 +6,7 @@ use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, Address, BytesN, Env, String, Vec,
 };
 
+pub mod acl_limits_merge_sunset;
 pub mod events;
 pub mod ratings_royalties_dividends;
 

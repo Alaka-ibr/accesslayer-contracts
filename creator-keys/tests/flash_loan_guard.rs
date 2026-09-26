@@ -124,6 +124,25 @@ fn admin_window_applies_to_single_and_batch_buys() {
 }
 
 #[test]
+fn batch_buy_v2_records_ledger_for_flash_loan_guard() {
+    let (env, client, _, _) = setup();
+    let creator = Address::generate(&env);
+    register_creator(&env, &client, &creator);
+    let buyer = Address::generate(&env);
+
+    client.batch_buy_v2(
+        &buyer,
+        &soroban_sdk::vec![&env, (creator.clone(), 1u32, None)],
+    );
+
+    assert_eq!(
+        client.try_sell_key(&creator, &buyer, &None),
+        Err(Ok(ContractError::FlashLoanDetected))
+    );
+    assert_guard_event(&env, &buyer, &creator);
+}
+
+#[test]
 fn delegated_transfer_is_blocked_inside_guard_window() {
     let (env, client, _, _) = setup();
     let creator = Address::generate(&env);

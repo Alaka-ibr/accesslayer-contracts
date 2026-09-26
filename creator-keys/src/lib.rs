@@ -7785,6 +7785,12 @@ impl CreatorKeysContract {
                 i += 1;
             }
 
+            let last_buy_ledger_key = constants::storage::last_buy_ledger(&creator, &buyer);
+            env.storage()
+                .persistent()
+                .set(&last_buy_ledger_key, &env.ledger().sequence());
+            extend_key_ttl_to_full_window(&env, &last_buy_ledger_key);
+
             // Per-order slippage check: total cost for this order vs max_price.
             if let Some(max) = max_price {
                 if order_price > max {

@@ -3022,3 +3022,103 @@ pub struct EscalationConfigUpdatedEvent {
 pub fn escalation_config_updated_topics(admin: &Address) -> (Symbol, Address) {
     (ESCALATION_CONFIG_UPDATED_EVENT_NAME, admin.clone())
 }
+
+// ============================================================================
+// Feature: leaderboard snapshot — top holder rankings (issue #924)
+// ============================================================================
+
+/// Event name emitted when a leaderboard snapshot is recorded.
+pub const LEADERBOARD_SNAPSHOT_TAKEN_EVENT_NAME: Symbol = symbol_short!("ldbrd_tk");
+
+/// Stable leaderboard-snapshot-taken event payload.
+///
+/// Event shape:
+/// - topics: `(LEADERBOARD_SNAPSHOT_TAKEN_EVENT_NAME, creator_id, snapshot_ledger)`
+/// - data: `LeaderboardSnapshotTakenEvent`
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct LeaderboardSnapshotTakenEvent {
+    /// Creator whose holder balances were ranked.
+    pub creator_id: Address,
+    /// Ledger sequence the snapshot was taken at.
+    pub snapshot_ledger: u32,
+    /// Leaderboard size `N` in effect when the snapshot was taken.
+    pub top_n: u32,
+    /// Number of candidate wallets holding at least one key.
+    pub total_candidates: u32,
+    /// Number of ranked entries actually stored (at most `top_n`).
+    pub recorded_entries: u32,
+}
+
+/// Shared leaderboard-snapshot-taken event topics tuple.
+pub fn leaderboard_snapshot_taken_topics(
+    creator_id: &Address,
+    snapshot_ledger: u32,
+) -> (Symbol, Address, u32) {
+    (
+        LEADERBOARD_SNAPSHOT_TAKEN_EVENT_NAME,
+        creator_id.clone(),
+        snapshot_ledger,
+    )
+}
+
+/// Event name emitted when an aged-out leaderboard snapshot is pruned.
+pub const LEADERBOARD_SNAPSHOT_PRUNED_EVENT_NAME: Symbol = symbol_short!("ldbrd_pr");
+
+/// Stable leaderboard-snapshot-pruned event payload.
+///
+/// Event shape:
+/// - topics: `(LEADERBOARD_SNAPSHOT_PRUNED_EVENT_NAME, creator_id, snapshot_ledger)`
+/// - data: `LeaderboardSnapshotPrunedEvent`
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct LeaderboardSnapshotPrunedEvent {
+    /// Creator the pruned snapshot belonged to.
+    pub creator_id: Address,
+    /// Ledger sequence of the pruned snapshot.
+    pub snapshot_ledger: u32,
+    /// Ledger in which the pruning happened.
+    pub current_ledger: u32,
+}
+
+/// Shared leaderboard-snapshot-pruned event topics tuple.
+pub fn leaderboard_snapshot_pruned_topics(
+    creator_id: &Address,
+    snapshot_ledger: u32,
+) -> (Symbol, Address, u32) {
+    (
+        LEADERBOARD_SNAPSHOT_PRUNED_EVENT_NAME,
+        creator_id.clone(),
+        snapshot_ledger,
+    )
+}
+
+/// Event name emitted when the protocol admin updates the leaderboard config.
+pub const LEADERBOARD_CONFIG_UPDATED_EVENT_NAME: Symbol = symbol_short!("ldbrd_cf");
+
+/// Stable leaderboard-config-updated event payload.
+///
+/// Event shape:
+/// - topics: `(LEADERBOARD_CONFIG_UPDATED_EVENT_NAME, admin)`
+/// - data: `LeaderboardConfigUpdatedEvent`
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct LeaderboardConfigUpdatedEvent {
+    /// Admin that applied the change.
+    pub admin: Address,
+    /// Leaderboard size in effect before this call.
+    pub old_top_n: u32,
+    /// Retention window in ledgers before this call.
+    pub old_retention_ledgers: u32,
+    /// Leaderboard size after this call.
+    pub new_top_n: u32,
+    /// Retention window in ledgers after this call.
+    pub new_retention_ledgers: u32,
+    /// Ledger in which the change was recorded.
+    pub ledger: u32,
+}
+
+/// Shared leaderboard-config-updated event topics tuple.
+pub fn leaderboard_config_updated_topics(admin: &Address) -> (Symbol, Address) {
+    (LEADERBOARD_CONFIG_UPDATED_EVENT_NAME, admin.clone())
+}

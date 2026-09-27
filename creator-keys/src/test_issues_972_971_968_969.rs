@@ -5,7 +5,7 @@
 //! #969 (Governance proposal contract with token-weighted voting)
 
 use crate::acl_dividend_twap_gov::{
-    AclWhitelistContract, AclWhitelistContractClient, DividendPoolContract,
+    AclWhitelistContract, AclWhitelistContractClient, CreateProposalParams, DividendPoolContract,
     DividendPoolContractClient, GovernanceProposalContract, GovernanceProposalContractClient,
     HolderSnapshotRecord, ProposalStatus, TwapOracleContract, TwapOracleContractClient,
 };
@@ -36,9 +36,7 @@ fn test_acl_add_and_permission_checks() {
     funcs.push_back(symbol_short!("deposit"));
 
     // Add to ACL
-    assert!(client
-        .try_add_to_acl(&admin, &target_contract, &funcs)
-        .is_ok());
+    assert!(client.try_add_to_acl(&admin, &target_contract, &funcs).is_ok());
 
     // Permitted functions
     assert!(client.is_permitted(&target_contract, &symbol_short!("swap")));
@@ -67,9 +65,7 @@ fn test_acl_wildcard_permission() {
     let mut funcs = Vec::new(&env);
     funcs.push_back(symbol_short!("all"));
 
-    assert!(client
-        .try_add_to_acl(&admin, &router_contract, &funcs)
-        .is_ok());
+    assert!(client.try_add_to_acl(&admin, &router_contract, &funcs).is_ok());
 
     assert!(client.is_permitted(&router_contract, &symbol_short!("swap")));
     assert!(client.is_permitted(&router_contract, &symbol_short!("any_fn")));
@@ -90,9 +86,7 @@ fn test_acl_remove_clears_permissions() {
     let mut funcs = Vec::new(&env);
     funcs.push_back(symbol_short!("swap"));
 
-    assert!(client
-        .try_add_to_acl(&admin, &target_contract, &funcs)
-        .is_ok());
+    assert!(client.try_add_to_acl(&admin, &target_contract, &funcs).is_ok());
     assert!(client.is_permitted(&target_contract, &symbol_short!("swap")));
 
     // Remove from ACL
@@ -178,9 +172,7 @@ fn test_dividend_pro_rata_distribution_and_claiming() {
     assert_eq!(epoch, 1);
 
     // Deposit 10_000 dividend
-    assert!(client
-        .try_deposit_dividends(&creator, &key_id, &10_000)
-        .is_ok());
+    assert!(client.try_deposit_dividends(&creator, &key_id, &10_000).is_ok());
 
     // Check pending dividends before claim
     let pending_a = client.get_pending_dividends(&key_id, &holder_a);
@@ -353,33 +345,32 @@ fn test_governance_proposal_lifecycle_pass_and_execute() {
     let voter_a = Address::generate(&env);
     let voter_b = Address::generate(&env);
 
-    // Create proposal: requires min 100 holding
     let discussion = String::from_str(&env, "https://gov.forum/prop-1");
 
     // Proposer with insufficient balance rejected
-    let fail_res = client.try_create_proposal(
-        &proposer,
-        &key_id,
-        &discussion,
-        &50,   // proposer balance < min holding
-        &100,  // min holding threshold
-        &1000, // voting duration
-        &500,  // min quorum weight
-        &5000, // 50% pass threshold
-    );
+    let invalid_params = CreateProposalParams {
+        key_id: key_id.clone(),
+        discussion_link: discussion.clone(),
+        proposer_balance: 50, // < min holding
+        min_holding_threshold: 100,
+        voting_duration_ledgers: 1000,
+        min_quorum_weight: 500,
+        pass_threshold_bps: 5000,
+    };
+    let fail_res = client.try_create_proposal(&proposer, &invalid_params);
     assert!(fail_res.is_err());
 
     // Proposer with sufficient balance succeeds
-    let proposal_id = client.create_proposal(
-        &proposer,
-        &key_id,
-        &discussion,
-        &150,  // proposer balance >= min holding
-        &100,  // min holding threshold
-        &1000, // voting duration (ledgers)
-        &500,  // min quorum weight
-        &5000, // 50% pass threshold
-    );
+    let valid_params = CreateProposalParams {
+        key_id: key_id.clone(),
+        discussion_link: discussion,
+        proposer_balance: 150, // >= min holding
+        min_holding_threshold: 100,
+        voting_duration_ledgers: 1000,
+        min_quorum_weight: 500,
+        pass_threshold_bps: 5000,
+    };
+    let proposal_id = client.create_proposal(&proposer, &valid_params);
 
     let prop = client.get_proposal(&proposal_id);
     assert_eq!(prop.status, ProposalStatus::Active);
@@ -426,21 +417,19 @@ fn test_governance_proposal_lifecycle_failure_below_threshold() {
     let voter_no = Address::generate(&env);
 
     let discussion = String::from_str(&env, "https://gov.forum/prop-2");
-    let proposal_id = client.create_proposal(
-        &proposer,
-        &key_id,
-        &discussion,
-        &200,
-        &100,
-        &500,
-        &100,
-        &5000, // 50% pass threshold
-    );
+    let params = CreateProposalParams {
+        key_id: key_id.clone(),
+        discussion_link: discussion,
+        proposer_balance: 200,
+        min_holding_threshold: 100,
+        voting_duration_ledgers: 500,
+        min_quorum_weight: 100,
+        pass_threshold_bps: 5000, // 50% pass threshold
+    };
+    let proposal_id = client.create_proposal(&proposer, &params);
 
     // Vote reject: voter votes false
-    assert!(client
-        .try_vote(&voter_no, &proposal_id, &false, &300)
-        .is_ok());
+    assert!(client.try_vote(&voter_no, &proposal_id, &false, &300).is_ok());
 
     // Advance ledger past voting end
     env.ledger().with_mut(|l| l.sequence_number += 501);
@@ -469,16 +458,16 @@ fn test_governance_proposal_contract_client() {
     client.init(&admin, &50);
 
     let discussion = String::from_str(&env, "https://forum.accesslayer.org");
-    let prop_id = client.create_proposal(
-        &proposer,
-        &key_id,
-        &discussion,
-        &100,
-        &50,
-        &300,
-        &100,
-        &5000,
-    );
+    let params = CreateProposalParams {
+        key_id: key_id.clone(),
+        discussion_link: discussion,
+        proposer_balance: 100,
+        min_holding_threshold: 50,
+        voting_duration_ledgers: 300,
+        min_quorum_weight: 100,
+        pass_threshold_bps: 5000,
+    };
+    let prop_id = client.create_proposal(&proposer, &params);
 
     client.vote(&voter, &prop_id, &true, &200);
 

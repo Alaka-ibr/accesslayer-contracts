@@ -1633,6 +1633,65 @@ pub enum RevenueKey {
     CycleClaimed(Address, u32, Address),
 }
 
+/// Storage keys for the per-creator holder leaderboard (issue #924).
+///
+/// Kept separate from [`DataKey`] to follow the same convention as
+/// [`RevenueKey`] and [`StakingKey`]: new feature keys live in their own
+/// `#[contracttype]` enum instead of growing the main key enum.
+#[derive(Clone, Debug, PartialEq)]
+#[contracttype]
+pub enum LeaderboardKey {
+    /// (creator, ledger) -> `LeaderboardSnapshot`.
+    Snapshot(Address, u32),
+    /// creator -> ascending `Vec<u32>` of recorded snapshot ledgers.
+    ///
+    /// Snapshots are keyed by ledger sequence, which is not an ordinal id, so
+    /// the contract cannot walk ids to find what to prune. This index is the
+    /// only way to enumerate which ledgers hold a snapshot for a creator.
+    SnapshotIndex(Address),
+    /// Protocol-wide leaderboard configuration -> `LeaderboardConfig`.
+    Config,
+}
+
+/// One ranked holder inside a [`LeaderboardSnapshot`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct LeaderboardEntry {
+    /// 1-based rank; `1` is the largest balance in the snapshot.
+    pub rank: u32,
+    /// Holder the balance belongs to.
+    pub holder: Address,
+    /// Key balance held at the snapshot ledger.
+    pub balance: u32,
+}
+
+/// A ranked top-N holder snapshot for one creator at one ledger (issue #924).
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct LeaderboardSnapshot {
+    /// Creator whose key balances were ranked.
+    pub creator: Address,
+    /// Ledger sequence the snapshot was taken at; also its storage key.
+    pub ledger: u32,
+    /// Leaderboard size `N` that was in effect when the snapshot was taken.
+    pub top_n: u32,
+    /// Candidate wallets holding at least one key at snapshot time.
+    pub total_candidates: u32,
+    /// Ranked holders, largest balance first, truncated to `top_n`.
+    pub entries: Vec<LeaderboardEntry>,
+}
+
+/// Protocol-wide leaderboard configuration (issue #924).
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct LeaderboardConfig {
+    /// Number of holders recorded per snapshot.
+    pub top_n: u32,
+    /// Age in ledgers after which a snapshot is pruned
+    /// (`0` disables age-based pruning).
+    pub retention_ledgers: u32,
+}
+
 /// Configuration for a creator's fixed-price pre-launch auction phase.
 #[derive(Clone, Debug, PartialEq)]
 #[contracttype]
@@ -2608,6 +2667,19 @@ fn assert_is_admin(env: &Env, caller: &Address) -> Result<(), ContractError> {
     Ok(())
 }
 
+/// Asserts that `caller` is either the protocol admin or the registered
+/// governance contract (issue #924).
+///
+/// Mirrors [`assert_creator_or_admin`]: the first check wins, and a caller that
+/// satisfies neither is rejected with [`ContractError::Unauthorized`]. When no
+/// governance address has been configured, the check is admin-only.
+fn assert_is_admin_or_governance(env: &Env, caller: &Address) -> Result<(), ContractError> {
+    if assert_is_admin(env, caller).is_ok() {
+        return Ok(());
+    }
+    assert_is_governance(env, caller)
+}
+
 fn read_protocol_fee_config(env: &Env) -> Option<fee::FeeConfig> {
     env.storage()
         .persistent()
@@ -2871,6 +2943,50 @@ pub fn read_retention_policy(env: &Env) -> RetentionPolicy {
         .persistent()
         .get(&constants::storage::RETENTION_POLICY)
         .unwrap_or_else(default_retention_policy)
+}
+
+/// Leaderboard configuration defaults and hard caps (issue #924).
+pub mod leaderboard {
+    use super::MAX_SNAPSHOT_HOLDERS;
+
+    /// Default number of holders recorded per snapshot.
+    pub const DEFAULT_TOP_N: u32 = 10;
+
+    /// Default retention window in ledgers (~30 days at 5 s per ledger).
+    pub const DEFAULT_RETENTION_LEDGERS: u32 = 518_400;
+
+    /// Hard ceiling on the admin-configurable `top_n`.
+    ///
+    /// Bound to [`MAX_SNAPSHOT_HOLDERS`] so a leaderboard entry can never be
+    /// larger than a holder snapshot page, which keeps a single snapshot
+    /// comfortably inside Soroban's per-entry size limit.
+    pub const MAX_TOP_N: u32 = MAX_SNAPSHOT_HOLDERS;
+
+    /// Hard ceiling on candidate addresses accepted per snapshot call.
+    pub const MAX_CANDIDATES: u32 = MAX_SNAPSHOT_HOLDERS;
+
+    /// Hard ceiling on retained snapshots per creator.
+    ///
+    /// Applies even when age-based pruning is disabled (`retention_ledgers` of
+    /// `0`) so persistent storage cannot grow without limit, mirroring how
+    /// [`super::MAX_PRICE_OBSERVATIONS`] bounds the price history.
+    pub const MAX_RETAINED_SNAPSHOTS: u32 = 100;
+}
+
+/// Returns the canonical default [`LeaderboardConfig`].
+pub fn default_leaderboard_config() -> LeaderboardConfig {
+    LeaderboardConfig {
+        top_n: leaderboard::DEFAULT_TOP_N,
+        retention_ledgers: leaderboard::DEFAULT_RETENTION_LEDGERS,
+    }
+}
+
+/// Reads the leaderboard configuration from storage, falling back to defaults.
+pub fn read_leaderboard_config(env: &Env) -> LeaderboardConfig {
+    env.storage()
+        .persistent()
+        .get(&LeaderboardKey::Config)
+        .unwrap_or_else(default_leaderboard_config)
 }
 
 fn assert_buy_price_slippage(
@@ -3816,6 +3932,106 @@ fn prune_old_snapshots(env: &Env, creator: &Address, current_snapshot_id: u32) {
         env.storage().persistent().set(&oldest_key, &cursor);
         extend_key_ttl_to_full_window(env, &oldest_key);
     }
+}
+
+/// Reads the ascending list of recorded leaderboard snapshot ledgers for a
+/// creator (issue #924).
+fn read_leaderboard_snapshot_index(env: &Env, creator: &Address) -> Vec<u32> {
+    env.storage()
+        .persistent()
+        .get(&LeaderboardKey::SnapshotIndex(creator.clone()))
+        .unwrap_or_else(|| Vec::new(env))
+}
+
+/// Drops leaderboard snapshots that have aged out (issue #924).
+///
+/// Mirrors [`prune_old_snapshots`], but leaderboard snapshots are keyed by
+/// ledger sequence rather than by an ordinal id, so the walk starts from
+/// [`LeaderboardKey::SnapshotIndex`] instead of an `oldest_snapshot_id` counter.
+/// A `retention_ledgers` of `0` disables age-based pruning; the
+/// [`leaderboard::MAX_RETAINED_SNAPSHOTS`] bound still applies so persistent
+/// storage cannot grow without limit.
+fn prune_old_leaderboards(env: &Env, creator: &Address) {
+    let mut index = read_leaderboard_snapshot_index(env, creator);
+    if index.is_empty() {
+        return;
+    }
+
+    let current_ledger = env.ledger().sequence();
+    let retention = read_leaderboard_config(env).retention_ledgers;
+    let cutoff = current_ledger.saturating_sub(retention);
+    let total = index.len();
+
+    // Decide how many leading entries to drop before mutating the index, so a
+    // partially eligible front never causes a partial prune.
+    let mut prune_count: u32 = 0;
+    for position in 0..total {
+        let Some(snapshot_ledger) = index.get(position) else {
+            break;
+        };
+        let aged_out = retention != 0 && snapshot_ledger < cutoff;
+        let beyond_cap = total - position > leaderboard::MAX_RETAINED_SNAPSHOTS;
+        if !aged_out && !beyond_cap {
+            break;
+        }
+        prune_count = position + 1;
+    }
+    if prune_count == 0 {
+        return;
+    }
+
+    for _ in 0..prune_count {
+        let Some(snapshot_ledger) = index.first() else {
+            break;
+        };
+        env.storage()
+            .persistent()
+            .remove(&LeaderboardKey::Snapshot(creator.clone(), snapshot_ledger));
+
+        env.events().publish(
+            events::leaderboard_snapshot_pruned_topics(creator, snapshot_ledger),
+            events::LeaderboardSnapshotPrunedEvent {
+                creator_id: creator.clone(),
+                snapshot_ledger,
+                current_ledger,
+            },
+        );
+        index.pop_front();
+    }
+
+    let index_key = LeaderboardKey::SnapshotIndex(creator.clone());
+    env.storage().persistent().set(&index_key, &index);
+    extend_key_ttl_to_full_window(env, &index_key);
+}
+
+/// Returns `true` when `candidate` sorts ahead of `current` on the leaderboard.
+fn ranks_before(candidate: &LeaderboardEntry, current: &LeaderboardEntry) -> bool {
+    if candidate.balance != current.balance {
+        return candidate.balance > current.balance;
+    }
+    candidate.holder < current.holder
+}
+
+/// Inserts `entry` into `ranked` keeping it ordered by descending balance and,
+/// for equal balances, ascending holder address.
+///
+/// `soroban_sdk::Vec` has no sort primitive, so ranking is an insertion sort.
+/// With at most [`leaderboard::MAX_CANDIDATES`] entries this is at most a few
+/// thousand comparisons, which stays well inside the instruction budget.
+fn insert_ranked_entry(ranked: &mut Vec<LeaderboardEntry>, entry: LeaderboardEntry) {
+    let mut position = ranked.len();
+    let mut i = 0u32;
+    while i < ranked.len() {
+        let Some(current) = ranked.get(i) else {
+            break;
+        };
+        if ranks_before(&entry, &current) {
+            position = i;
+            break;
+        }
+        i += 1;
+    }
+    ranked.insert(position, entry);
 }
 
 /// Maximum bid-ask spread in basis points (50%).
@@ -7565,6 +7781,199 @@ impl CreatorKeysContract {
         );
 
         Ok(())
+    }
+
+    // =========================================================================
+    // Feature: leaderboard snapshot — top holder rankings (issue #924)
+    // =========================================================================
+
+    /// Records a ranked top-N holder snapshot for `creator` at the current
+    /// ledger, keyed by ledger sequence, for governance and reward distribution.
+    ///
+    /// # Trust model (read before using this for rewards)
+    ///
+    /// Soroban contract storage cannot be enumerated on-chain (there is no
+    /// "iterate all keys with this prefix"), so — exactly as
+    /// [`Self::take_snapshot`] does for issue #778 — the candidate wallets are
+    /// supplied by the caller (e.g. sourced off-chain from an indexer) rather
+    /// than read from an on-chain registry. **The resulting ranking is only as
+    /// complete as the caller-supplied candidate set**: a caller that omits a
+    /// holder produces a leaderboard that omits that holder, and the contract
+    /// cannot detect it. Anyone consuming a leaderboard for reward
+    /// distribution inherits that trust assumption.
+    ///
+    /// Wallets holding zero keys are excluded, and at most
+    /// [`leaderboard::MAX_CANDIDATES`] candidates are accepted per call. A
+    /// creator with more holders than the cap needs its indexer-supplied list
+    /// paginated by the caller.
+    ///
+    /// Only callable by the protocol admin or the registered governance
+    /// contract. Triggers age-based pruning for `creator` after the new
+    /// snapshot is stored.
+    ///
+    /// # Errors
+    ///
+    /// - [`ContractError::Unauthorized`] — `caller` is neither the protocol
+    ///   admin nor the registered governance contract.
+    /// - [`ContractError::NotRegistered`] — `creator` has no profile.
+    /// - [`ContractError::SnapshotHolderLimitExceeded`] — `candidates` exceeds
+    ///   [`leaderboard::MAX_CANDIDATES`] entries.
+    /// - [`ContractError::SnapshotAlreadyExists`] — a snapshot was already
+    ///   recorded for `creator` at the current ledger.
+    pub fn take_leaderboard_snapshot(
+        env: Env,
+        caller: Address,
+        creator: Address,
+        candidates: Vec<Address>,
+    ) -> Result<u32, ContractError> {
+        caller.require_auth();
+        assert_is_admin_or_governance(&env, &caller)?;
+        read_registered_creator_profile(&env, &creator)?;
+
+        if candidates.len() > leaderboard::MAX_CANDIDATES {
+            return Err(ContractError::SnapshotHolderLimitExceeded);
+        }
+
+        let config = read_leaderboard_config(&env);
+        let snapshot_ledger = env.ledger().sequence();
+        let snapshot_key = LeaderboardKey::Snapshot(creator.clone(), snapshot_ledger);
+        if env.storage().persistent().has(&snapshot_key) {
+            return Err(ContractError::SnapshotAlreadyExists);
+        }
+
+        let mut ranked: Vec<LeaderboardEntry> = Vec::new(&env);
+        for holder in candidates.iter() {
+            let balance_key = constants::storage::holder_balance_key(&creator, &holder);
+            let balance: u32 = env.storage().persistent().get(&balance_key).unwrap_or(0);
+            if balance == 0 {
+                continue;
+            }
+            insert_ranked_entry(
+                &mut ranked,
+                LeaderboardEntry {
+                    rank: 0,
+                    holder,
+                    balance,
+                },
+            );
+        }
+
+        let total_candidates = ranked.len();
+        while ranked.len() > config.top_n {
+            ranked.pop_back();
+        }
+        for position in 0..ranked.len() {
+            if let Some(mut entry) = ranked.get(position) {
+                entry.rank = position + 1;
+                ranked.set(position, entry);
+            }
+        }
+
+        let snapshot = LeaderboardSnapshot {
+            creator: creator.clone(),
+            ledger: snapshot_ledger,
+            top_n: config.top_n,
+            total_candidates,
+            entries: ranked.clone(),
+        };
+        env.storage().persistent().set(&snapshot_key, &snapshot);
+        extend_key_ttl_to_full_window(&env, &snapshot_key);
+
+        let index_key = LeaderboardKey::SnapshotIndex(creator.clone());
+        let mut index = read_leaderboard_snapshot_index(&env, &creator);
+        index.push_back(snapshot_ledger);
+        env.storage().persistent().set(&index_key, &index);
+        extend_key_ttl_to_full_window(&env, &index_key);
+
+        // Prune leaderboard snapshots that have aged out.
+        prune_old_leaderboards(&env, &creator);
+
+        env.events().publish(
+            events::leaderboard_snapshot_taken_topics(&creator, snapshot_ledger),
+            events::LeaderboardSnapshotTakenEvent {
+                creator_id: creator,
+                snapshot_ledger,
+                top_n: config.top_n,
+                total_candidates,
+                recorded_entries: snapshot.entries.len(),
+            },
+        );
+
+        Ok(snapshot_ledger)
+    }
+
+    /// Read-only view: returns the leaderboard snapshot recorded for `creator`
+    /// at `ledger`, or `None` when no snapshot was recorded there (or it has
+    /// since been pruned).
+    pub fn get_leaderboard(env: Env, creator: Address, ledger: u32) -> Option<LeaderboardSnapshot> {
+        let key = LeaderboardKey::Snapshot(creator, ledger);
+        env.storage().persistent().get(&key)
+    }
+
+    /// Read-only view: returns the ascending list of ledgers that currently
+    /// hold a leaderboard snapshot for `creator`.
+    pub fn get_leaderboard_ledgers(env: Env, creator: Address) -> Vec<u32> {
+        read_leaderboard_snapshot_index(&env, &creator)
+    }
+
+    /// Sets the protocol-wide leaderboard size and snapshot retention window.
+    ///
+    /// Only callable by the protocol admin. `top_n` must be in
+    /// `1..=leaderboard::MAX_TOP_N`; `retention_ledgers` of `0` disables
+    /// age-based pruning (the [`leaderboard::MAX_RETAINED_SNAPSHOTS`] bound
+    /// still applies).
+    ///
+    /// # Errors
+    ///
+    /// - [`ContractError::Unauthorized`] — `admin` is not the protocol admin.
+    /// - [`ContractError::NotPositiveAmount`] — `top_n` is `0`.
+    /// - [`ContractError::LimitTooHigh`] — `top_n` exceeds
+    ///   [`leaderboard::MAX_TOP_N`].
+    pub fn set_leaderboard_config(
+        env: Env,
+        admin: Address,
+        top_n: u32,
+        retention_ledgers: u32,
+    ) -> Result<(), ContractError> {
+        admin.require_auth();
+        assert_is_admin(&env, &admin)?;
+
+        if top_n == 0 {
+            return Err(ContractError::NotPositiveAmount);
+        }
+        if top_n > leaderboard::MAX_TOP_N {
+            return Err(ContractError::LimitTooHigh);
+        }
+
+        let old = read_leaderboard_config(&env);
+        let config = LeaderboardConfig {
+            top_n,
+            retention_ledgers,
+        };
+        env.storage()
+            .persistent()
+            .set(&LeaderboardKey::Config, &config);
+        extend_key_ttl_to_full_window(&env, &LeaderboardKey::Config);
+
+        env.events().publish(
+            events::leaderboard_config_updated_topics(&admin),
+            events::LeaderboardConfigUpdatedEvent {
+                admin,
+                old_top_n: old.top_n,
+                old_retention_ledgers: old.retention_ledgers,
+                new_top_n: top_n,
+                new_retention_ledgers: retention_ledgers,
+                ledger: env.ledger().sequence(),
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Read-only view: returns the leaderboard configuration, or the canonical
+    /// defaults when none has been set.
+    pub fn get_leaderboard_config(env: Env) -> LeaderboardConfig {
+        read_leaderboard_config(&env)
     }
 
     // =========================================================================
@@ -15187,3 +15596,6 @@ mod test_staking_lifecycle;
 
 #[cfg(test)]
 mod test_issues_904_905_906_908;
+
+#[cfg(test)]
+mod test_issues_924;

@@ -194,7 +194,11 @@ pub mod acl_contract {
             remove_from_acl(&env, &admin, &contract_address)
         }
 
-        pub fn is_permitted(env: Env, contract_address: Address, function_selector: Symbol) -> bool {
+        pub fn is_permitted(
+            env: Env,
+            contract_address: Address,
+            function_selector: Symbol,
+        ) -> bool {
             is_permitted(&env, &contract_address, &function_selector)
         }
 
@@ -229,11 +233,11 @@ pub struct HolderSnapshotRecord {
 #[contracttype]
 pub enum DividendDataKey {
     Admin,
-    CurrentEpoch(Address),                    // key_id -> epoch
-    EpochDistribution(Address, u32),          // (key_id, epoch) -> DividendSnapshot
-    HolderSnapshot(Address, u32, Address),    // (key_id, epoch, holder) -> balance
-    EpochClaimed(Address, u32, Address),      // (key_id, epoch, holder) -> bool
-    DistributionHistory(Address),             // key_id -> Vec<DividendSnapshot>
+    CurrentEpoch(Address),                 // key_id -> epoch
+    EpochDistribution(Address, u32),       // (key_id, epoch) -> DividendSnapshot
+    HolderSnapshot(Address, u32, Address), // (key_id, epoch, holder) -> balance
+    EpochClaimed(Address, u32, Address),   // (key_id, epoch, holder) -> bool
+    DistributionHistory(Address),          // key_id -> Vec<DividendSnapshot>
 }
 
 pub const DIVIDEND_DEPOSITED_EVENT: Symbol = symbol_short!("div_dep");
@@ -269,9 +273,10 @@ pub fn snapshot_holdings(
         timestamp: env.ledger().timestamp(),
     };
 
-    env.storage()
-        .instance()
-        .set(&DividendDataKey::EpochDistribution(key_id.clone(), next_epoch), &snapshot);
+    env.storage().instance().set(
+        &DividendDataKey::EpochDistribution(key_id.clone(), next_epoch),
+        &snapshot,
+    );
     env.storage().instance().set(&epoch_key, &next_epoch);
 
     Ok(next_epoch)
@@ -323,10 +328,8 @@ pub fn deposit_dividends(
     history.push_back(snapshot.clone());
     env.storage().instance().set(&hist_key, &history);
 
-    env.events().publish(
-        (DIVIDEND_DEPOSITED_EVENT, key_id.clone()),
-        (epoch, amount),
-    );
+    env.events()
+        .publish((DIVIDEND_DEPOSITED_EVENT, key_id.clone()), (epoch, amount));
 
     Ok(epoch)
 }
@@ -350,17 +353,21 @@ pub fn get_pending_dividends(env: &Env, key_id: &Address, holder: &Address) -> i
         }
 
         let dist_key = DividendDataKey::EpochDistribution(key_id.clone(), epoch);
-        if let Some(snapshot) = env.storage().instance().get::<_, DividendSnapshot>(&dist_key) {
+        if let Some(snapshot) = env
+            .storage()
+            .instance()
+            .get::<_, DividendSnapshot>(&dist_key)
+        {
             if snapshot.total_amount <= 0 || snapshot.total_supply_snapshot <= 0 {
                 continue;
             }
 
-            let holder_key =
-                DividendDataKey::HolderSnapshot(key_id.clone(), epoch, holder.clone());
+            let holder_key = DividendDataKey::HolderSnapshot(key_id.clone(), epoch, holder.clone());
             let holder_balance: i128 = env.storage().instance().get(&holder_key).unwrap_or(0);
 
             if holder_balance > 0 {
-                let share = (snapshot.total_amount * holder_balance) / snapshot.total_supply_snapshot;
+                let share =
+                    (snapshot.total_amount * holder_balance) / snapshot.total_supply_snapshot;
                 pending_total += share;
             }
         }
@@ -394,17 +401,21 @@ pub fn claim_dividends(
         }
 
         let dist_key = DividendDataKey::EpochDistribution(key_id.clone(), epoch);
-        if let Some(snapshot) = env.storage().instance().get::<_, DividendSnapshot>(&dist_key) {
+        if let Some(snapshot) = env
+            .storage()
+            .instance()
+            .get::<_, DividendSnapshot>(&dist_key)
+        {
             if snapshot.total_amount <= 0 || snapshot.total_supply_snapshot <= 0 {
                 continue;
             }
 
-            let holder_key =
-                DividendDataKey::HolderSnapshot(key_id.clone(), epoch, holder.clone());
+            let holder_key = DividendDataKey::HolderSnapshot(key_id.clone(), epoch, holder.clone());
             let holder_balance: i128 = env.storage().instance().get(&holder_key).unwrap_or(0);
 
             if holder_balance > 0 {
-                let share = (snapshot.total_amount * holder_balance) / snapshot.total_supply_snapshot;
+                let share =
+                    (snapshot.total_amount * holder_balance) / snapshot.total_supply_snapshot;
                 if share > 0 {
                     total_claimed += share;
                     env.storage().instance().set(&claimed_key, &true);
@@ -444,7 +455,9 @@ pub mod dividend_contract {
     impl DividendPoolContract {
         pub fn init(env: Env, admin: Address) {
             admin.require_auth();
-            env.storage().instance().set(&DividendDataKey::Admin, &admin);
+            env.storage()
+                .instance()
+                .set(&DividendDataKey::Admin, &admin);
         }
 
         pub fn snapshot_holdings(
@@ -525,11 +538,8 @@ pub fn record_twap_trade(
     }
 
     let key = TwapDataKey::TwapObservations(key_id.clone());
-    let mut observations: Vec<TwapObservation> = env
-        .storage()
-        .instance()
-        .get(&key)
-        .unwrap_or(Vec::new(env));
+    let mut observations: Vec<TwapObservation> =
+        env.storage().instance().get(&key).unwrap_or(Vec::new(env));
 
     let now = env.ledger().timestamp();
     let config = get_twap_config(env, key_id);
@@ -672,13 +682,10 @@ pub fn get_twap(env: &Env, key_id: &Address, window_seconds: u64) -> Result<i128
 /// Read or default TWAP configuration.
 pub fn get_twap_config(env: &Env, key_id: &Address) -> TwapConfig {
     let key = TwapDataKey::TwapConfig(key_id.clone());
-    env.storage()
-        .instance()
-        .get(&key)
-        .unwrap_or(TwapConfig {
-            min_observations: 2,
-            max_window_seconds: 86400, // 24 hours
-        })
+    env.storage().instance().get(&key).unwrap_or(TwapConfig {
+        min_observations: 2,
+        max_window_seconds: 86400, // 24 hours
+    })
 }
 
 /// Set TWAP configuration for a key.
@@ -718,7 +725,11 @@ pub mod twap_contract {
             record_twap_trade(&env, &key_id, price)
         }
 
-        pub fn get_twap(env: Env, key_id: Address, window_seconds: u64) -> Result<i128, ContractError> {
+        pub fn get_twap(
+            env: Env,
+            key_id: Address,
+            window_seconds: u64,
+        ) -> Result<i128, ContractError> {
             get_twap(&env, &key_id, window_seconds)
         }
 
@@ -840,7 +851,11 @@ pub fn create_proposal(
     env.storage().instance().set(&count_key, &proposal_id);
 
     env.events().publish(
-        (PROPOSAL_CREATED_EVENT, params.key_id.clone(), proposer.clone()),
+        (
+            PROPOSAL_CREATED_EVENT,
+            params.key_id.clone(),
+            proposer.clone(),
+        ),
         (proposal_id, end_ledger),
     );
 

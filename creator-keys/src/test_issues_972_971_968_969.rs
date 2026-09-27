@@ -36,7 +36,9 @@ fn test_acl_add_and_permission_checks() {
     funcs.push_back(symbol_short!("deposit"));
 
     // Add to ACL
-    assert!(client.try_add_to_acl(&admin, &target_contract, &funcs).is_ok());
+    assert!(client
+        .try_add_to_acl(&admin, &target_contract, &funcs)
+        .is_ok());
 
     // Permitted functions
     assert!(client.is_permitted(&target_contract, &symbol_short!("swap")));
@@ -65,7 +67,9 @@ fn test_acl_wildcard_permission() {
     let mut funcs = Vec::new(&env);
     funcs.push_back(symbol_short!("all"));
 
-    assert!(client.try_add_to_acl(&admin, &router_contract, &funcs).is_ok());
+    assert!(client
+        .try_add_to_acl(&admin, &router_contract, &funcs)
+        .is_ok());
 
     assert!(client.is_permitted(&router_contract, &symbol_short!("swap")));
     assert!(client.is_permitted(&router_contract, &symbol_short!("any_fn")));
@@ -86,7 +90,9 @@ fn test_acl_remove_clears_permissions() {
     let mut funcs = Vec::new(&env);
     funcs.push_back(symbol_short!("swap"));
 
-    assert!(client.try_add_to_acl(&admin, &target_contract, &funcs).is_ok());
+    assert!(client
+        .try_add_to_acl(&admin, &target_contract, &funcs)
+        .is_ok());
     assert!(client.is_permitted(&target_contract, &symbol_short!("swap")));
 
     // Remove from ACL
@@ -172,7 +178,9 @@ fn test_dividend_pro_rata_distribution_and_claiming() {
     assert_eq!(epoch, 1);
 
     // Deposit 10_000 dividend
-    assert!(client.try_deposit_dividends(&creator, &key_id, &10_000).is_ok());
+    assert!(client
+        .try_deposit_dividends(&creator, &key_id, &10_000)
+        .is_ok());
 
     // Check pending dividends before claim
     let pending_a = client.get_pending_dividends(&key_id, &holder_a);
@@ -429,7 +437,9 @@ fn test_governance_proposal_lifecycle_failure_below_threshold() {
     let proposal_id = client.create_proposal(&proposer, &params);
 
     // Vote reject: voter votes false
-    assert!(client.try_vote(&voter_no, &proposal_id, &false, &300).is_ok());
+    assert!(client
+        .try_vote(&voter_no, &proposal_id, &false, &300)
+        .is_ok());
 
     // Advance ledger past voting end
     env.ledger().with_mut(|l| l.sequence_number += 501);
